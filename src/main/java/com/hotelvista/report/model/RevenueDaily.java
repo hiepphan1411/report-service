@@ -21,6 +21,9 @@ public class RevenueDaily {
 
     private Integer totalOrders = 0;
     private Double totalRevenue = 0.0;
+    private Double roomRevenue = 0.0;
+    private Double serviceRevenue = 0.0;
+    private Integer bookingCount = 0;
     private Integer successfulPayments = 0;
     private Integer cancelledOrders = 0;
 

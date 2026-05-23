@@ -36,10 +36,13 @@ public class ReportEventConsumer {
                 .orElse(new RevenueDaily(date));
 
         if ("ORDER_CREATED".equalsIgnoreCase(event.getEventType())) {
-            revenue.setTotalOrders(revenue.getTotalOrders() + 1);
+            revenue.setTotalOrders(totalOrders(revenue) + 1);
+            revenue.setServiceRevenue(serviceRevenue(revenue) + safe(event.getAmount()));
         } else if ("ORDER_CANCELLED".equalsIgnoreCase(event.getEventType())) {
-            revenue.setCancelledOrders(revenue.getCancelledOrders() + 1);
+            revenue.setCancelledOrders(cancelledOrders(revenue) + 1);
+            revenue.setServiceRevenue(Math.max(serviceRevenue(revenue) - safe(event.getAmount()), 0));
         }
+        revenue.setTotalRevenue(roomRevenue(revenue) + serviceRevenue(revenue));
 
         revenueDailyRepository.save(revenue);
     }
@@ -54,8 +57,7 @@ public class ReportEventConsumer {
                 .orElse(new RevenueDaily(date));
 
         if ("PAYMENT_SUCCESS".equalsIgnoreCase(event.getEventType())) {
-            revenue.setSuccessfulPayments(revenue.getSuccessfulPayments() + 1);
-            revenue.setTotalRevenue(revenue.getTotalRevenue() + event.getAmount());
+            revenue.setSuccessfulPayments(successfulPayments(revenue) + 1);
         }
 
         revenueDailyRepository.save(revenue);
@@ -66,8 +68,9 @@ public class ReportEventConsumer {
     public void consumeBookingEvent(BookingEvent event) {
         log.info("Received booking event: {}", event);
         
-        Integer month = event.getMonth() != null ? event.getMonth() : LocalDate.now().getMonthValue();
-        Integer year = event.getYear() != null ? event.getYear() : LocalDate.now().getYear();
+        LocalDate eventDate = event.getEventDate() != null ? event.getEventDate() : LocalDate.now();
+        Integer month = event.getMonth() != null ? event.getMonth() : eventDate.getMonthValue();
+        Integer year = event.getYear() != null ? event.getYear() : eventDate.getYear();
 
         // Update Room Statistics
         if (event.getRoomId() != null) {
@@ -75,9 +78,9 @@ public class ReportEventConsumer {
                     .orElse(new RoomStatistics(null, event.getRoomId(), event.getRoomNumber(), 0, 0.0, month, year));
             
             if ("CHECK_OUT_SUCCESS".equalsIgnoreCase(event.getEventType())) {
-                roomStats.setBookingCount(roomStats.getBookingCount() + 1);
+                roomStats.setBookingCount((roomStats.getBookingCount() != null ? roomStats.getBookingCount() : 0) + 1);
                 if (event.getTotalAmount() != null) {
-                    roomStats.setRevenue(roomStats.getRevenue() + event.getTotalAmount());
+                    roomStats.setRevenue((roomStats.getRevenue() != null ? roomStats.getRevenue() : 0.0) + event.getTotalAmount());
                 }
             }
             roomStatisticsRepository.save(roomStats);
@@ -88,18 +91,55 @@ public class ReportEventConsumer {
                 .orElse(new DashboardSummary(null, month, year, 0, 0, 0.0));
 
         if ("CHECK_IN_SUCCESS".equalsIgnoreCase(event.getEventType())) {
-            dashboard.setTotalGuestsCheckin(dashboard.getTotalGuestsCheckin() + 1);
+            dashboard.setTotalGuestsCheckin((dashboard.getTotalGuestsCheckin() != null ? dashboard.getTotalGuestsCheckin() : 0) + 1);
         } else if ("BOOKING_CREATED".equalsIgnoreCase(event.getEventType())) {
-            dashboard.setTotalBookings(dashboard.getTotalBookings() + 1);
+            dashboard.setTotalBookings((dashboard.getTotalBookings() != null ? dashboard.getTotalBookings() : 0) + 1);
         } else if ("BOOKING_CANCELLED".equalsIgnoreCase(event.getEventType())) {
-            int currentBookings = dashboard.getTotalBookings();
+            int currentBookings = dashboard.getTotalBookings() != null ? dashboard.getTotalBookings() : 0;
             if (currentBookings > 0) {
                 double currentCancelled = (dashboard.getCancellationRate() / 100.0) * currentBookings;
                 currentCancelled += 1;
                 dashboard.setCancellationRate((currentCancelled / currentBookings) * 100.0);
             }
         }
-        
+
         dashboardSummaryRepository.save(dashboard);
+
+        if ("CHECK_OUT_SUCCESS".equalsIgnoreCase(event.getEventType())) {
+            RevenueDaily revenue = revenueDailyRepository.findByDate(eventDate)
+                    .orElse(new RevenueDaily(eventDate));
+            revenue.setBookingCount(bookingCount(revenue) + 1);
+            revenue.setRoomRevenue(roomRevenue(revenue) + safe(event.getTotalAmount()));
+            revenue.setTotalRevenue(roomRevenue(revenue) + serviceRevenue(revenue));
+            revenueDailyRepository.save(revenue);
+        }
+    }
+
+    private double safe(Double value) {
+        return value != null ? value : 0.0;
+    }
+
+    private int totalOrders(RevenueDaily revenue) {
+        return revenue.getTotalOrders() != null ? revenue.getTotalOrders() : 0;
+    }
+
+    private int cancelledOrders(RevenueDaily revenue) {
+        return revenue.getCancelledOrders() != null ? revenue.getCancelledOrders() : 0;
+    }
+
+    private int successfulPayments(RevenueDaily revenue) {
+        return revenue.getSuccessfulPayments() != null ? revenue.getSuccessfulPayments() : 0;
+    }
+
+    private int bookingCount(RevenueDaily revenue) {
+        return revenue.getBookingCount() != null ? revenue.getBookingCount() : 0;
+    }
+
+    private double roomRevenue(RevenueDaily revenue) {
+        return safe(revenue.getRoomRevenue());
+    }
+
+    private double serviceRevenue(RevenueDaily revenue) {
+        return safe(revenue.getServiceRevenue());
     }
 }
