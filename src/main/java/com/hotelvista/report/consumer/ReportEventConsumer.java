@@ -1,5 +1,7 @@
 package com.hotelvista.report.consumer;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hotelvista.report.dto.event.BookingEvent;
 import com.hotelvista.report.dto.event.OrderEvent;
 import com.hotelvista.report.dto.event.PaymentEvent;
@@ -25,11 +27,15 @@ public class ReportEventConsumer {
     private final RevenueDailyRepository revenueDailyRepository;
     private final RoomStatisticsRepository roomStatisticsRepository;
     private final DashboardSummaryRepository dashboardSummaryRepository;
+    private final ObjectMapper objectMapper;
 
     @KafkaListener(topics = "order-events", groupId = "report-service-group")
     @Transactional
-    public void consumeOrderEvent(OrderEvent event) {
+    public void consumeOrderEvent(String message) throws JsonProcessingException {
+        OrderEvent event = objectMapper.readValue(message, OrderEvent.class);
+
         log.info("Received order event: {}", event);
+
         LocalDate date = event.getCreatedAt() != null ? event.getCreatedAt() : LocalDate.now();
 
         RevenueDaily revenue = revenueDailyRepository.findByDate(date)
@@ -42,15 +48,18 @@ public class ReportEventConsumer {
             revenue.setCancelledOrders(cancelledOrders(revenue) + 1);
             revenue.setServiceRevenue(Math.max(serviceRevenue(revenue) - safe(event.getAmount()), 0));
         }
-        revenue.setTotalRevenue(roomRevenue(revenue) + serviceRevenue(revenue));
 
+        revenue.setTotalRevenue(roomRevenue(revenue) + serviceRevenue(revenue));
         revenueDailyRepository.save(revenue);
     }
 
     @KafkaListener(topics = "payment-events", groupId = "report-service-group")
     @Transactional
-    public void consumePaymentEvent(PaymentEvent event) {
+    public void consumePaymentEvent(String message) throws JsonProcessingException {
+        PaymentEvent event = objectMapper.readValue(message, PaymentEvent.class);
+
         log.info("Received payment event: {}", event);
+
         LocalDate date = LocalDate.now();
 
         RevenueDaily revenue = revenueDailyRepository.findByDate(date)
@@ -65,37 +74,61 @@ public class ReportEventConsumer {
 
     @KafkaListener(topics = "booking-events", groupId = "report-service-group")
     @Transactional
-    public void consumeBookingEvent(BookingEvent event) {
+    public void consumeBookingEvent(String message) throws JsonProcessingException {
+        BookingEvent event = objectMapper.readValue(message, BookingEvent.class);
+
         log.info("Received booking event: {}", event);
-        
+
         LocalDate eventDate = event.getEventDate() != null ? event.getEventDate() : LocalDate.now();
         Integer month = event.getMonth() != null ? event.getMonth() : eventDate.getMonthValue();
         Integer year = event.getYear() != null ? event.getYear() : eventDate.getYear();
 
-        // Update Room Statistics
         if (event.getRoomId() != null) {
-            RoomStatistics roomStats = roomStatisticsRepository.findByRoomIdAndMonthAndYear(event.getRoomId(), month, year)
-                    .orElse(new RoomStatistics(null, event.getRoomId(), event.getRoomNumber(), 0, 0.0, month, year));
-            
+            RoomStatistics roomStats = roomStatisticsRepository.findByRoomIdAndMonthAndYear(
+                            event.getRoomId(),
+                            month,
+                            year
+                    )
+                    .orElse(new RoomStatistics(
+                            null,
+                            event.getRoomId(),
+                            event.getRoomNumber(),
+                            0,
+                            0.0,
+                            month,
+                            year
+                    ));
+
             if ("CHECK_OUT_SUCCESS".equalsIgnoreCase(event.getEventType())) {
-                roomStats.setBookingCount((roomStats.getBookingCount() != null ? roomStats.getBookingCount() : 0) + 1);
+                roomStats.setBookingCount(
+                        (roomStats.getBookingCount() != null ? roomStats.getBookingCount() : 0) + 1
+                );
+
                 if (event.getTotalAmount() != null) {
-                    roomStats.setRevenue((roomStats.getRevenue() != null ? roomStats.getRevenue() : 0.0) + event.getTotalAmount());
+                    roomStats.setRevenue(
+                            (roomStats.getRevenue() != null ? roomStats.getRevenue() : 0.0)
+                                    + event.getTotalAmount()
+                    );
                 }
             }
+
             roomStatisticsRepository.save(roomStats);
         }
 
-        // Update Dashboard Summary
         DashboardSummary dashboard = dashboardSummaryRepository.findByMonthAndYear(month, year)
                 .orElse(new DashboardSummary(null, month, year, 0, 0, 0.0));
 
         if ("CHECK_IN_SUCCESS".equalsIgnoreCase(event.getEventType())) {
-            dashboard.setTotalGuestsCheckin((dashboard.getTotalGuestsCheckin() != null ? dashboard.getTotalGuestsCheckin() : 0) + 1);
+            dashboard.setTotalGuestsCheckin(
+                    (dashboard.getTotalGuestsCheckin() != null ? dashboard.getTotalGuestsCheckin() : 0) + 1
+            );
         } else if ("BOOKING_CREATED".equalsIgnoreCase(event.getEventType())) {
-            dashboard.setTotalBookings((dashboard.getTotalBookings() != null ? dashboard.getTotalBookings() : 0) + 1);
+            dashboard.setTotalBookings(
+                    (dashboard.getTotalBookings() != null ? dashboard.getTotalBookings() : 0) + 1
+            );
         } else if ("BOOKING_CANCELLED".equalsIgnoreCase(event.getEventType())) {
             int currentBookings = dashboard.getTotalBookings() != null ? dashboard.getTotalBookings() : 0;
+
             if (currentBookings > 0) {
                 double currentCancelled = (dashboard.getCancellationRate() / 100.0) * currentBookings;
                 currentCancelled += 1;
@@ -108,9 +141,11 @@ public class ReportEventConsumer {
         if ("CHECK_OUT_SUCCESS".equalsIgnoreCase(event.getEventType())) {
             RevenueDaily revenue = revenueDailyRepository.findByDate(eventDate)
                     .orElse(new RevenueDaily(eventDate));
+
             revenue.setBookingCount(bookingCount(revenue) + 1);
             revenue.setRoomRevenue(roomRevenue(revenue) + safe(event.getTotalAmount()));
             revenue.setTotalRevenue(roomRevenue(revenue) + serviceRevenue(revenue));
+
             revenueDailyRepository.save(revenue);
         }
     }
