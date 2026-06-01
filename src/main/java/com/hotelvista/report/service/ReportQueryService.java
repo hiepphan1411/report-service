@@ -4,9 +4,11 @@ import com.hotelvista.report.dto.*;
 import com.hotelvista.report.model.DashboardSummary;
 import com.hotelvista.report.model.RevenueDaily;
 import com.hotelvista.report.model.RoomStatistics;
+import com.hotelvista.report.model.ServiceRevenueDaily;
 import com.hotelvista.report.repository.DashboardSummaryRepository;
 import com.hotelvista.report.repository.RevenueDailyRepository;
 import com.hotelvista.report.repository.RoomStatisticsRepository;
+import com.hotelvista.report.repository.ServiceRevenueDailyRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -29,6 +31,7 @@ public class ReportQueryService {
     private final RevenueDailyRepository revenueDailyRepository;
     private final RoomStatisticsRepository roomStatisticsRepository;
     private final DashboardSummaryRepository dashboardSummaryRepository;
+    private final ServiceRevenueDailyRepository serviceRevenueDailyRepository;
 
     public DashboardStatsDto getDashboardStats(Integer month, Integer year) {
         LocalDate now = LocalDate.now();
@@ -80,9 +83,21 @@ public class ReportQueryService {
                 .map(row -> new DailyOccupancyDto(String.valueOf(row.getDate().getDayOfMonth()),
                         TOTAL_ROOMS_FALLBACK == 0 ? 0 : bookingCount(row) * 100.0 / TOTAL_ROOMS_FALLBACK))
                 .toList());
-        dto.setPopularServices(List.of(new PopularServiceDto("Hotel services",
-                currentRows.stream().mapToInt(this::totalOrders).sum(),
-                currentRows.stream().mapToDouble(this::safeServiceRevenue).sum())));
+        dto.setPopularServices(serviceRevenueDailyRepository.findByDateBetweenOrderByDateAsc(
+                        current.atDay(1), current.atEndOfMonth())
+                .stream()
+                .collect(Collectors.groupingBy(
+                        row -> safeText(row.getServiceName(), row.getServiceId()),
+                        Collectors.collectingAndThen(Collectors.toList(), rows -> new PopularServiceDto(
+                                safeText(rows.get(0).getServiceName(), rows.get(0).getServiceId()),
+                                rows.stream().mapToInt(this::serviceOrderCount).sum(),
+                                rows.stream().mapToDouble(this::serviceRevenue).sum()
+                        ))
+                ))
+                .values()
+                .stream()
+                .sorted(Comparator.comparing(PopularServiceDto::getRevenue).reversed())
+                .toList());
         return dto;
     }
 
@@ -182,10 +197,31 @@ public class ReportQueryService {
     public List<ServiceReportDto> getServiceReport(LocalDate startDate, LocalDate endDate, String period) {
         return revenueDailyRepository.findByDateBetweenOrderByDateAsc(startDate, endDate).stream()
                 .map(row -> {
-                    double serviceRevenue = safeServiceRevenue(row);
-                    int orders = totalOrders(row);
+                    List<ServiceRevenueItemDto> services = serviceRevenueDailyRepository.findByDate(row.getDate())
+                            .stream()
+                            .filter(service -> serviceRevenue(service) > 0)
+                            .map(service -> new ServiceRevenueItemDto(
+                                    service.getServiceId(),
+                                    safeText(service.getServiceName(), service.getServiceId()),
+                                    service.getServiceCategory(),
+                                    serviceOrderCount(service),
+                                    serviceRevenue(service)
+                            ))
+                            .sorted(Comparator.comparing(ServiceRevenueItemDto::getRevenue).reversed())
+                            .toList();
+
+                    double serviceRevenue = services.stream().mapToDouble(ServiceRevenueItemDto::getRevenue).sum();
+                    if (serviceRevenue == 0) {
+                        serviceRevenue = safeServiceRevenue(row);
+                    }
+
+                    int orders = services.stream().mapToInt(ServiceRevenueItemDto::getOrders).sum();
+                    if (orders == 0) {
+                        orders = totalOrders(row);
+                    }
+
                     return new ServiceReportDto(row.getDate().toString(), 0, 0, 0, 0, 0,
-                            serviceRevenue, orders, orders == 0 ? 0 : serviceRevenue / orders);
+                            services.isEmpty() ? serviceRevenue : 0, orders, orders == 0 ? 0 : serviceRevenue / orders, services);
                 })
                 .toList();
     }
@@ -273,6 +309,14 @@ public class ReportQueryService {
         return row.getTotalOrders() != null ? row.getTotalOrders() : 0;
     }
 
+    private int serviceOrderCount(ServiceRevenueDaily row) {
+        return row.getOrderCount() != null ? row.getOrderCount() : 0;
+    }
+
+    private double serviceRevenue(ServiceRevenueDaily row) {
+        return safe(row.getRevenue());
+    }
+
     private int cancelledOrders(RevenueDaily row) {
         return row.getCancelledOrders() != null ? row.getCancelledOrders() : 0;
     }
@@ -283,6 +327,10 @@ public class ReportQueryService {
 
     private double safe(Double value) {
         return value != null ? value : 0;
+    }
+
+    private String safeText(String primary, String fallback) {
+        return primary != null && !primary.isBlank() ? primary : fallback;
     }
 
     private double percentChange(double current, double previous) {

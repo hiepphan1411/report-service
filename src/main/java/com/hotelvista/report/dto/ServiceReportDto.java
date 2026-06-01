@@ -17,4 +17,5 @@ public class ServiceReportDto {
     private double others;
     private int totalOrders;
     private double avgOrderValue;
+    private java.util.List<ServiceRevenueItemDto> services = new java.util.ArrayList<>();
 }

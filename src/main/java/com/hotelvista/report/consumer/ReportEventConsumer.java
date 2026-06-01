@@ -8,9 +8,11 @@ import com.hotelvista.report.dto.event.PaymentEvent;
 import com.hotelvista.report.model.DashboardSummary;
 import com.hotelvista.report.model.RevenueDaily;
 import com.hotelvista.report.model.RoomStatistics;
+import com.hotelvista.report.model.ServiceRevenueDaily;
 import com.hotelvista.report.repository.DashboardSummaryRepository;
 import com.hotelvista.report.repository.RevenueDailyRepository;
 import com.hotelvista.report.repository.RoomStatisticsRepository;
+import com.hotelvista.report.repository.ServiceRevenueDailyRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -27,6 +29,7 @@ public class ReportEventConsumer {
     private final RevenueDailyRepository revenueDailyRepository;
     private final RoomStatisticsRepository roomStatisticsRepository;
     private final DashboardSummaryRepository dashboardSummaryRepository;
+    private final ServiceRevenueDailyRepository serviceRevenueDailyRepository;
     private final ObjectMapper objectMapper;
 
     @KafkaListener(topics = "order-events", groupId = "report-service-group")
@@ -44,13 +47,49 @@ public class ReportEventConsumer {
         if ("ORDER_CREATED".equalsIgnoreCase(event.getEventType())) {
             revenue.setTotalOrders(totalOrders(revenue) + 1);
             revenue.setServiceRevenue(serviceRevenue(revenue) + safe(event.getAmount()));
+            updateServiceRevenue(event, date, 1, safe(event.getAmount()));
         } else if ("ORDER_CANCELLED".equalsIgnoreCase(event.getEventType())) {
             revenue.setCancelledOrders(cancelledOrders(revenue) + 1);
             revenue.setServiceRevenue(Math.max(serviceRevenue(revenue) - safe(event.getAmount()), 0));
+            updateServiceRevenue(event, date, -1, -safe(event.getAmount()));
         }
 
         revenue.setTotalRevenue(roomRevenue(revenue) + serviceRevenue(revenue));
         revenueDailyRepository.save(revenue);
+    }
+
+    private void updateServiceRevenue(OrderEvent event, LocalDate date, int orderDelta, double revenueDelta) {
+        String serviceId = event.getServiceId();
+        if (serviceId == null || serviceId.isBlank()) {
+            serviceId = event.getServiceName();
+        }
+        if (serviceId == null || serviceId.isBlank()) {
+            serviceId = "unknown-service";
+        }
+        final String serviceKey = serviceId;
+
+        ServiceRevenueDaily serviceRevenue = serviceRevenueDailyRepository.findByDateAndServiceId(date, serviceKey)
+                .orElseGet(() -> {
+                    ServiceRevenueDaily created = new ServiceRevenueDaily();
+                    created.setDate(date);
+                    created.setServiceId(serviceKey);
+                    created.setServiceName(event.getServiceName() != null && !event.getServiceName().isBlank()
+                            ? event.getServiceName()
+                            : serviceKey);
+                    created.setServiceCategory(event.getServiceCategory());
+                    return created;
+                });
+
+        if (event.getServiceName() != null && !event.getServiceName().isBlank()) {
+            serviceRevenue.setServiceName(event.getServiceName());
+        }
+        if (event.getServiceCategory() != null && !event.getServiceCategory().isBlank()) {
+            serviceRevenue.setServiceCategory(event.getServiceCategory());
+        }
+
+        serviceRevenue.setOrderCount(Math.max(totalOrders(serviceRevenue) + orderDelta, 0));
+        serviceRevenue.setRevenue(Math.max(serviceRevenue(serviceRevenue) + revenueDelta, 0));
+        serviceRevenueDailyRepository.save(serviceRevenue);
     }
 
     @KafkaListener(topics = "payment-events", groupId = "report-service-group")
@@ -176,5 +215,13 @@ public class ReportEventConsumer {
 
     private double serviceRevenue(RevenueDaily revenue) {
         return safe(revenue.getServiceRevenue());
+    }
+
+    private int totalOrders(ServiceRevenueDaily revenue) {
+        return revenue.getOrderCount() != null ? revenue.getOrderCount() : 0;
+    }
+
+    private double serviceRevenue(ServiceRevenueDaily revenue) {
+        return safe(revenue.getRevenue());
     }
 }

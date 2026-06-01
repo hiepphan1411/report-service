@@ -10,4 +10,7 @@ public class OrderEvent {
     private String orderId;
     private Double amount;
     private LocalDate createdAt;
+    private String serviceId;
+    private String serviceName;
+    private String serviceCategory;
 }
